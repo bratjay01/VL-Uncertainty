@@ -10,6 +10,7 @@
 
 ## 🔥 News
 
+- 2025.3.16: ✨ Welcome to check out our newest work: [Uncertainty-o](https://github.com/Ruiyang-061X/Uncertainty-o), unveiling uncertainty in Large Multimodal Models (LMMs) in a model-agnostic manner, supporting both Large Comprehension Models and Large Generation Models.
 - 2024.12.19: 🐣 Source code of [VL-Uncertainty](https://arxiv.org/abs/2411.11919) is released!
 
 ## ⚡ Overview
