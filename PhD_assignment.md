@@ -1,10 +1,10 @@
 **Task 1: Evaluation of VL_Uncertainty**
 
-VL_Uncertainty was evaluated using the InternVL2-1B model on the LLaVABench benchmark. The code executed successfully and achieved a hallucination detection accuracy of 63.33%. The corresponding JSON log file is available in the /exp folder. No major issues were encountered during the setup or execution of the codebase. The Flash_attn module was omitted due to hardware limitations, as the experiments were conducted on a laptop.
+VL_Uncertainty was evaluated using the InternVL2-1B model on the LLaVABench benchmark. The code executed successfully and achieved a hallucination detection accuracy of 63.33%. The log file for this task can be found [here](Task1_log.json). No major issues were encountered during the setup or execution of the codebase. The Flash_attn module was omitted due to hardware limitations, as the experiments were conducted on a laptop.
 
 **Task 2: Logical Inconsistency Integration**
 
-The logical inconsistency detection method was successfully integrated into the VL_Uncertainty framework. Experimental results and logs for this task are stored in the /exp folder. The logical inconsistency method can be found in /util directory. Add these arguments to the existing command in the file "run_LLaVABench" to run logical reasoning.
+The logical inconsistency detection method was successfully integrated into the VL_Uncertainty framework. The log file for this task can be found [here](Task2_log.json). The logical inconsistency method can be found in /util directory. Add these arguments to the existing command in the file "run_LLaVABench" to run logical reasoning.
 ```bash
 --enable_logical_inconsistency --inconsistency_threshold 0.2
 ```
@@ -13,7 +13,7 @@ The logical inconsistency detection method was successfully integrated into the 
 
 I chose to implement weights for contradictions involving the main claim under the assumption that the contradictions between the initial claim and verification answers are more informative about hallucination than contradictions between two verification answers. If the model contradicts itself on the main claim, that's a strong signal of instability.
 Right now, all contradiction pairs are treated equally. This means a contradiction between two verification statements (e.g., "existence question answer" vs "attribute question answer") carries the same weight as a contradiction between the main claim and a verification answer. When the inconsistency_rate treats all pairs equally, so rare but highly important contradictions (claim ↔ verification) might be diluted by many neutral verification↔verification pairs.
-The weighted approach directly targets hallucination when the model changes its core assertion under probing. 
+The weighted approach directly targets hallucination when the model changes its core assertion under probing. The log file for this task can be found [here](Task3_log.json).
 An improvement of approx 7% in the hallucination detection accuracy is observed from 38.3 to 45.( I only ran the code once for each experiment, hence the metric values cant be that reliable. As I did not take an average of multiple runs owing to time constraints) 
 
 
