@@ -7,6 +7,7 @@ from benchmark.MMVet import MMVet
 from benchmark.LLaVABench import LLaVABench
 from benchmark.MMMU import MMMU
 from llm.Qwen import Qwen
+from util.LogicalInconsistencyMethod import LogicalInconsistencyCheck
 from util.visual_perturbation import *
 from util.textual_perturbation import *
 from util.misc import *
@@ -64,6 +65,8 @@ def parse_args():
     parser.add_argument('--llm', type=str, default='Qwen2.5-3B-Instruct')
     parser.add_argument('--uncertainty', type=str, default='vl_uncertainty')
     parser.add_argument('--uncertainty_thres', type=float, default=1.0)
+    parser.add_argument('--enable_logical_inconsistency', action='store_true', help='Enable logical inconsistency detection method')
+    parser.add_argument('--inconsistency_threshold', type=float, default=0.2, help='Threshold for logical inconsistency detection')
     parser.add_argument('--visual_perturbation', type=str, default='blurring')
     parser.add_argument('--blur_radius_list', type=float, nargs='+', default=[0.6, 0.8, 1.0, 1.2, 1.4])
     parser.add_argument('--textual_perturbation', type=str, default='llm_rephrasing')
@@ -300,6 +303,43 @@ def semantic_entropy(args, lvlm, sample, llm, log_dict):
     uncertainty_estimation(args, sample, llm, log_dict)
     hallucination_detection(args, sample, log_dict)
 
+def logical_inconsistency(args, lvlm, sample, llm, log_dict):
+    """
+    New method: Logical inconsistency detection.
+    Adds 'inconsistency_rate', 'flag_inconsistent' to log_dict.
+    """
+    logic_checker = LogicalInconsistencyCheck(
+        lvlm=lvlm,
+        llm=llm,
+        num_questions_per_type=1,  # Conservative for speed
+        inconsistency_threshold=args.inconsistency_threshold,
+        max_pairs=20,  # Avoid O(n^2) explosion
+        use_weighted_contradictions=True,
+        claim_weight=2.0,
+    )
+    
+    logic_results = logic_checker.process_sample(sample)
+    
+    # Add to log_dict (same structure as uncertainty)
+    log_dict[sample['idx']]['inconsistency_rate'] = logic_results['inconsistency_rate']
+    log_dict[sample['idx']]['flag_inconsistent'] = logic_results['flag_inconsistent']
+    log_dict[sample['idx']]['question_type'] = logic_results['question_type']
+    log_dict[sample['idx']]['initial_answer'] = logic_results['initial_answer']
+    log_dict[sample['idx']]['claim_sentences'] = logic_results['claim_sentences']
+    log_dict[sample['idx']]['total_contradictions'] = logic_results['total_contradictions']
+    log_dict[sample['idx']]['total_pairs'] = logic_results['total_pairs']
+    
+    # Optional: Use inconsistency for hallucination flag (parallel to uncertainty)
+    flag_predict_hallucination = logic_results['flag_inconsistent']
+    log_dict[sample['idx']]['flag_predict_hallucination_logical'] = flag_predict_hallucination
+    
+    flag_detection_correct_logical = (
+        (log_dict[sample['idx']]['flag_ans_correct'] and not flag_predict_hallucination) or
+        (not log_dict[sample['idx']]['flag_ans_correct'] and flag_predict_hallucination)
+    )
+    log_dict[sample['idx']]['flag_detection_correct_logical'] = flag_detection_correct_logical
+
+
 def handle_single(args, idx, lvlm, benchmark, llm, log_dict):
     sample = obatin_single_sample(args, benchmark, idx, log_dict)
     if sample is None or sample['img'] is None or sample['question'] is None or sample['gt_ans'] is None:
@@ -307,10 +347,16 @@ def handle_single(args, idx, lvlm, benchmark, llm, log_dict):
         return
     log_dict[idx]['flag_sample_valid'] = True
     infer_single_sample(args, lvlm, sample, False, llm, log_dict)
+    
+    # Run the selected uncertainty method
     if args.uncertainty == 'vl_uncertainty':
         vl_uncertainty(args, lvlm, sample, llm, log_dict)
     elif args.uncertainty == 'semantic_entropy':
         semantic_entropy(args, lvlm, sample, llm, log_dict)
+    
+    # Run logical inconsistency method independently if enabled
+    if args.enable_logical_inconsistency:
+        logical_inconsistency(args, lvlm, sample, llm, log_dict)
 
 def handle_batch(args, lvlm, benchmark, llm):
     log_dict = {}
@@ -319,27 +365,72 @@ def handle_batch(args, lvlm, benchmark, llm):
     log_dict['begin_time_str'] = begin_time_str
 
     total = 0
-    cnt_correct_detection = 0
+    cnt_correct_detection_uncertainty = 0
+    cnt_correct_detection_logical = 0
+    total_inconsistency_rate = 0.0
+    valid_samples_with_inconsistency = 0
     benchmark_size = benchmark.obtain_size()
-    benchmark_size = 2
+    # benchmark_size = 2
     for idx in tqdm(range(benchmark_size)):
         log_dict[idx] = {}
         handle_single(args, idx, lvlm, benchmark, llm, log_dict)
         if not log_dict[idx]['flag_sample_valid']:
             continue
-        if log_dict[idx]['flag_detection_correct']:
-            cnt_correct_detection += 1
+        
+        # Track uncertainty method detection accuracy
+        if 'flag_detection_correct' in log_dict[idx] and log_dict[idx]['flag_detection_correct']:
+            cnt_correct_detection_uncertainty += 1
+        
+        # Track logical inconsistency detection accuracy (if enabled)
+        if args.enable_logical_inconsistency and 'flag_detection_correct_logical' in log_dict[idx]:
+            if log_dict[idx]['flag_detection_correct_logical']:
+                cnt_correct_detection_logical += 1
+            # Accumulate inconsistency rate during main loop
+            if 'inconsistency_rate' in log_dict[idx]:
+                total_inconsistency_rate += log_dict[idx]['inconsistency_rate']
+                valid_samples_with_inconsistency += 1
+        
         total += 1
 
-    log_dict['Hallucination detection accuracy'] = (cnt_correct_detection / total) * 100
-    log_dict['Total samples'] = total
+    # Calculate and store metrics for uncertainty method
+    log_dict['Uncertainty_Method'] = args.uncertainty
+    log_dict['Uncertainty_Hallucination_Detection_Accuracy'] = (cnt_correct_detection_uncertainty / total) * 100 if total > 0 else 0
+    
+    # Calculate and store metrics for logical inconsistency method (if enabled)
+    if args.enable_logical_inconsistency:
+        log_dict['Logical_Inconsistency_Enabled'] = True
+        log_dict['Logical_Inconsistency_Threshold'] = args.inconsistency_threshold
+        log_dict['Logical_Inconsistency_Hallucination_Detection_Accuracy'] = (cnt_correct_detection_logical / total) * 100 if total > 0 else 0
+        
+        # Average inconsistency score (accumulated during main loop)
+        avg_inconsistency_score = (total_inconsistency_rate / valid_samples_with_inconsistency) if valid_samples_with_inconsistency > 0 else 0.0
+        log_dict['Average_Inconsistency_Score'] = avg_inconsistency_score
+    else:
+        log_dict['Logical_Inconsistency_Enabled'] = False
+    
+    log_dict['Total_Samples'] = total
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("RESULTS SUMMARY")
+    print("="*60)
+    print(f"Total samples processed: {total}")
+    print(f"\nUncertainty Method ({args.uncertainty}):")
+    print(f"  Hallucination Detection Accuracy: {log_dict['Uncertainty_Hallucination_Detection_Accuracy']:.2f}%")
+    if args.enable_logical_inconsistency:
+        print(f"\nLogical Inconsistency Method:")
+        print(f"  Threshold: {args.inconsistency_threshold}")
+        print(f"  Hallucination Detection Accuracy: {log_dict['Logical_Inconsistency_Hallucination_Detection_Accuracy']:.2f}%")
+        print(f"  Average Inconsistency Score: {log_dict['Average_Inconsistency_Score']:.4f}")
+    print("="*60 + "\n")
+    
     end_time_str = get_cur_time()
     log_dict['end_time_str'] = end_time_str
     if not os.path.exists('exp'):
         os.makedirs('exp')
     with open(f'exp/log_{begin_time_str}.json', "w") as f: 
-        json.dump(log_dict, f)
-    print(f"- Full log is saved at exp/log_dict_{begin_time_str}.json.")
+        json.dump(log_dict, f, indent=2)
+    print(f"- Full log is saved at exp/log_{begin_time_str}.json.")
 
 def fix_seed(seed=0):
     random.seed(seed)
@@ -356,6 +447,10 @@ def main():
     lvlm = obtain_lvlm(args)
     benchmark = obtain_benchmark(args)
     llm = obtain_llm(args)
+    print(f"LVLM device: {next(lvlm.model.parameters()).device}")
+    print(f"LLM device: {next(llm.model.parameters()).device}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"GPU name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'None'}")
     handle_batch(args, lvlm, benchmark, llm)
 
 if __name__ == "__main__":
